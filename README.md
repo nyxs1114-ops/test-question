@@ -29,3 +29,7 @@ npm test
 ## 上线前
 
 生产环境需配置 HTTPS，并设置 `COOKIE_SECURE=1`，反向代理保留正确的 Host；备份 SQLite 数据（运行中使用 SQLite 备份 API 或停机后一并处理 WAL）。本版适合单实例使用。尚未实现邮箱验证、密码找回、内容举报与审核、管理员后台、分布式限流和多实例数据库，开放公共注册前应补齐相关运营与安全能力。不要将数据库或用户信息提交到 Git。
+
+## 从家中电脑分享公网链接
+
+使用 Cloudflare 临时 HTTPS 隧道，无需公网 IP。安装工具后，先运行 `start-public-windows.bat`，再运行 `start-tunnel-windows.bat`。完整操作和保留已有数据库的方法见 [公网试用说明](PUBLIC-ACCESS.md)。

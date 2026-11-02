@@ -4,6 +4,7 @@ import { randomBytes, scryptSync, timingSafeEqual, createHash } from 'node:crypt
 import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isIP } from 'node:net';
 import { seed } from './seed.js';
 
 const root = dirname(fileURLToPath(import.meta.url));
@@ -38,7 +39,11 @@ async function body(req) {
 function field(data,name,min,max) { const v=data[name]; if(typeof v!=='string'||v.trim().length<min||v.trim().length>max) fail(400,`${name==='title'?'标题':name==='answer'?'标准答案':name==='body'?'回答':name==='name'?'昵称':name==='password'?'密码':'内容'}需为 ${min}–${max} 个字符`); return v.trim(); }
 const attempts = new Map();
 function rateLimit(req) {
-  const key=req.socket.remoteAddress, now=Date.now();
+  const remote=req.socket.remoteAddress;
+  const forwarded=req.headers['cf-connecting-ip'];
+  // Enable only for a loopback-bound origin behind the local cloudflared connector.
+  const trusted=process.env.TRUST_CLOUDFLARE==='1' && ['127.0.0.1','::1','::ffff:127.0.0.1'].includes(remote);
+  const key=trusted && typeof forwarded==='string' && isIP(forwarded) ? forwarded : remote, now=Date.now();
   const a=attempts.get(key); if(!a||a.until<now) { attempts.set(key,{count:1,until:now+600000}); return; }
   if(++a.count>30) fail(429,'尝试次数过多，请 10 分钟后重试');
 }

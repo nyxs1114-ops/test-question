@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
+import { request as httpRequest } from 'node:http';
 
 test('账户、题库、回答、收藏和持久化完整流程',async t=>{
   const dir=mkdtempSync(join(tmpdir(),'qa-path-'));const port=32187;let child;
@@ -32,4 +33,32 @@ test('账户、题库、回答、收藏和持久化完整流程',async t=>{
   await stop();await start();assert.equal((await req(`/api/questions/${id}`)).data.replies.length,1);assert.equal((await req('/api/me')).data.user.name,'测试同学');
   assert.equal((await req('/api/questions/99999')).status,404);
   const page=await fetch(`http://127.0.0.1:${port}/`);assert.equal(page.status,200);assert.match(await page.text(),/QA Path/);
+  // Forwarded client headers must not bypass limits in the default direct mode.
+  let denied;for(let i=1;i<=31;i++)denied=await fetch(`http://127.0.0.1:${port}/api/login`,{method:'POST',headers:{'Content-Type':'application/json','CF-Connecting-IP':`198.51.100.${i}`},body:JSON.stringify({email:'invalid',password:'test-password-123'})});assert.equal(denied.status,429);
+});
+
+test('HTTPS 隧道支持登录且按可信客户端 IP 分别限流',{timeout:20000},async t=>{
+  const dir=mkdtempSync(join(tmpdir(),'qa-public-'));const port=32188;
+  const child=spawn(process.execPath,['server.js'],{env:{...process.env,PORT:String(port),HOST:'127.0.0.1',COOKIE_SECURE:'1',TRUST_CLOUDFLARE:'1',DB_PATH:join(dir,'test.db')},stdio:['ignore','pipe','pipe']});
+  t.after(async()=>{if(child.exitCode===null){const exit=once(child,'exit');child.kill();await exit;}rmSync(dir,{recursive:true,force:true});});
+  await Promise.race([once(child.stdout,'data'),once(child,'exit').then(()=>{throw Error('服务未启动');})]);
+  const hostname='qa-test.trycloudflare.com';
+  async function request(path,data,{ip='198.51.100.10',origin=`https://${hostname}`,cookie=''}={}){
+    // Native HTTP preserves the external Host exactly as the tunnel does.
+    return new Promise((resolve,reject)=>{
+      const req=httpRequest({hostname:'127.0.0.1',port,path:'/api'+path,method:data?'POST':'GET',headers:{Host:hostname,Origin:origin,'CF-Connecting-IP':ip,'Content-Type':'application/json',...(cookie?{Cookie:cookie}:{})}},res=>{
+        let body='';res.setEncoding('utf8');res.on('data',chunk=>body+=chunk);res.on('end',()=>resolve({status:res.statusCode,headers:{get:key=>{const value=res.headers[key.toLowerCase()];return Array.isArray(value)?value[0]:value;}},json:async()=>JSON.parse(body)}));
+      });
+      req.on('error',reject);req.end(data?JSON.stringify(data):undefined);
+    });
+  }
+  const register=await request('/register',{name:'公网测试',email:'public@example.com',password:'test-password-123'});assert.equal(register.status,200);assert.match(register.headers.get('set-cookie'),/; Secure/);const cookie=register.headers.get('set-cookie').split(';')[0];
+  const publish=await request('/questions',{title:'公网隧道如何验证登录？',content:'验证 HTTPS 代理下的 Cookie、来源校验及数据保存。',answer:'通过 HTTPS 注册后检查会话，提交题目和回答，并验证刷新仍能读取。',category:'接口测试',difficulty:'中等',tags:'HTTPS,登录'},{cookie});assert.equal(publish.status,201);const {id}=await publish.json();
+  const reply=await request(`/questions/${id}/replies`,{body:'这条回答由模拟公网 HTTPS 会话提交。'},{cookie});assert.equal(reply.status,201);
+  const me=await request('/me',null,{cookie});assert.equal((await me.json()).user.name,'公网测试');
+  const wrongOrigin=await request('/logout',{}, {cookie,origin:'https://evil.example'});assert.equal(wrongOrigin.status,403);
+  const httpOrigin=await request('/logout',{}, {cookie,origin:`http://${hostname}`});assert.equal(httpOrigin.status,403);
+  for(let i=0;i<31;i++)await request('/login',{email:'invalid',password:'test-password-123'},{ip:'198.51.100.20'});
+  assert.equal((await request('/login',{email:'public@example.com',password:'test-password-123'},{ip:'198.51.100.20'})).status,429);
+  assert.equal((await request('/login',{email:'public@example.com',password:'test-password-123'},{ip:'198.51.100.21'})).status,200);
 });
